@@ -126,7 +126,8 @@ async def store_ai_key(request):
     if not user_id or not key:
         return web.json_response({"error": "Missing key."}, status=400)
     try:
-        await db.set_single_ai_key(user_id, crypto.encrypt(key))
+        hint = key[-4:] if len(key) >= 4 else key
+        await db.store_ai_key(user_id, crypto.encrypt(key), hint=hint)
         return web.json_response({"ok": True})
     except Exception as e:
         return web.json_response({"error": str(e)}, status=400)
