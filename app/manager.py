@@ -70,9 +70,11 @@ async def _health(_req):
 
 
 async def start_web(manager: BotManager):
+    from app.api import setup_internal_routes
     app = web.Application()
     app.router.add_get("/", _health)
     app.router.add_get("/health", _health)
+    setup_internal_routes(app, manager)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", config.PORT)
