@@ -142,3 +142,15 @@ async def store_ai_key(user_id, key_enc: str, label: str = "primary"):
         "insert into ai_keys (user_id, provider, label, key_enc, status) values ($1,'gemini',$2,$3,'active')",
         user_id, label, key_enc,
     )
+
+
+async def set_single_ai_key(user_id, key_enc: str, label: str = "primary"):
+    """Replace the user's Gemini key(s) with one fresh active key."""
+    p = await pool()
+    async with p.acquire() as con:
+        async with con.transaction():
+            await con.execute("delete from ai_keys where user_id = $1 and provider = 'gemini'", user_id)
+            await con.execute(
+                "insert into ai_keys (user_id, provider, label, key_enc, status) values ($1,'gemini',$2,$3,'active')",
+                user_id, label, key_enc,
+            )
