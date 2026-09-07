@@ -61,6 +61,16 @@ class TenantBot:
             log.exception(f"[{self.user_id}] handler error: {e}")
 
     async def _handle(self, event):
+        # Only handle private 1-to-1 chats. Ignore groups, channels, and bots.
+        if not event.is_private:
+            return
+        try:
+            sender = await event.get_sender()
+            if getattr(sender, "bot", False):
+                return  # ignore other bots
+        except Exception:
+            pass
+
         text = (event.raw_text or "").strip()
         customer_id = event.chat_id
         cfg = await self.config()
