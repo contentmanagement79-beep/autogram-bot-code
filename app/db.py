@@ -136,11 +136,11 @@ async def store_session(user_id, api_id: int, api_hash_enc: str, phone: str, ses
     )
 
 
-async def store_ai_key(user_id, key_enc: str, label: str = "primary"):
+async def store_ai_key(user_id, key_enc: str, hint: str = "", label: str = "primary"):
     p = await pool()
     await p.execute(
-        "insert into ai_keys (user_id, provider, label, key_enc, status) values ($1,'gemini',$2,$3,'active')",
-        user_id, label, key_enc,
+        "insert into ai_keys (user_id, provider, label, key_enc, hint, status) values ($1,'gemini',$2,$3,$4,'active')",
+        user_id, label, key_enc, hint,
     )
 
 
