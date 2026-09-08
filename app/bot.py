@@ -12,6 +12,7 @@ from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, DocumentA
 from app import db, crypto, config
 from app.ai import GeminiClient
 from app.prompt import build_system_prompt
+from app.integration import call_integration
 from app import voice as voicelib
 
 log = logging.getLogger("bot")
@@ -61,16 +62,6 @@ class TenantBot:
             log.exception(f"[{self.user_id}] handler error: {e}")
 
     async def _handle(self, event):
-        # Only handle private 1-to-1 chats. Ignore groups, channels, and bots.
-        if not event.is_private:
-            return
-        try:
-            sender = await event.get_sender()
-            if getattr(sender, "bot", False):
-                return  # ignore other bots
-        except Exception:
-            pass
-
         text = (event.raw_text or "").strip()
         customer_id = event.chat_id
         cfg = await self.config()
@@ -126,6 +117,16 @@ class TenantBot:
         enriched = text
         if media_ctx:
             enriched = (text + f"\n[media: {media_ctx}]").strip() if text else f"[media: {media_ctx}]"
+
+        # ── Live data from the tenant's own website API (optional) ──
+        try:
+            integ = await db.get_integration(self.user_id)
+            if integ and integ.get("enabled") and integ.get("api_url"):
+                live = await call_integration(integ, text or media_ctx or "")
+                if live:
+                    enriched = (enriched + f"\n[live data: {live}]").strip()
+        except Exception as e:
+            log.warning(f"integration error: {e}")
 
         # ── Generate reply ──
         system_prompt = build_system_prompt(persona, cfg["products"])
