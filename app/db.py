@@ -263,3 +263,22 @@ async def get_media_by_id(media_id):
         "select name, caption, url, kind, blur, spoiler, self_destruct from media_items where id = $1", media_id
     )
     return dict(row) if row else None
+
+
+# ── Persistent per-customer summary ────────────────────────
+async def get_customer_profile(user_id, customer_id):
+    p = await pool()
+    row = await p.fetchrow(
+        "select summary from customer_profiles where user_id = $1 and customer_id = $2", user_id, customer_id
+    )
+    return row["summary"] if row and row["summary"] else None
+
+
+async def upsert_customer_profile(user_id, customer_id, summary: str):
+    p = await pool()
+    await p.execute(
+        """insert into customer_profiles (user_id, customer_id, summary, updated_at)
+           values ($1,$2,$3, now())
+           on conflict (user_id, customer_id) do update set summary = $3, updated_at = now()""",
+        user_id, customer_id, summary,
+    )
