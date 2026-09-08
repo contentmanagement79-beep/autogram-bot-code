@@ -20,3 +20,4 @@ PLATFORM_API_HASH = os.getenv("PLATFORM_API_HASH", "")
 MEMORY_TURNS = 16          # how many past messages to send to the model
 MEMORY_RETENTION_DAYS = 7  # raw messages older than this are purged
 DEBOUNCE_SECONDS = 4       # wait this long for rapid follow-up messages, then reply once
+FOLLOWUP_INTERVAL = 1800   # how often (seconds) to run follow-up automation
