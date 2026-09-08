@@ -18,14 +18,18 @@ async def pool() -> asyncpg.Pool:
 
 # ── Tenants to run ─────────────────────────────────────────
 async def get_connected_tenants():
-    """Users with a connected Telegram account."""
+    """Users with a connected Telegram account (personal userbot OR BotFather bot)."""
     p = await pool()
     rows = await p.fetch(
         """
-        select t.user_id, t.api_id, t.api_hash_enc, t.session_string_enc
+        select t.user_id, coalesce(t.mode,'user') as mode,
+               t.api_id, t.api_hash_enc, t.session_string_enc, t.bot_token_enc
         from telegram_accounts t
         where t.status = 'connected'
-          and t.session_string_enc is not null
+          and (
+            (coalesce(t.mode,'user') = 'user' and t.session_string_enc is not null)
+            or (t.mode = 'bot' and t.bot_token_enc is not null)
+          )
         """
     )
     return [dict(r) for r in rows]
@@ -127,12 +131,27 @@ async def store_session(user_id, api_id: int, api_hash_enc: str, phone: str, ses
     p = await pool()
     await p.execute(
         """
-        insert into telegram_accounts (user_id, api_id, api_hash_enc, phone, session_string_enc, status, updated_at)
-        values ($1,$2,$3,$4,$5,'connected', now())
+        insert into telegram_accounts (user_id, mode, api_id, api_hash_enc, phone, session_string_enc, status, updated_at)
+        values ($1,'user',$2,$3,$4,$5,'connected', now())
         on conflict (user_id) do update set
-          api_id = $2, api_hash_enc = $3, phone = $4, session_string_enc = $5, status = 'connected', updated_at = now()
+          mode='user', api_id = $2, api_hash_enc = $3, phone = $4, session_string_enc = $5,
+          bot_token_enc = null, status = 'connected', updated_at = now()
         """,
         user_id, api_id, api_hash_enc, phone, session_enc,
+    )
+
+
+async def store_bot(user_id, bot_token_enc: str, label: str = ""):
+    p = await pool()
+    await p.execute(
+        """
+        insert into telegram_accounts (user_id, mode, bot_token_enc, phone, status, updated_at)
+        values ($1,'bot',$2,$3,'connected', now())
+        on conflict (user_id) do update set
+          mode='bot', bot_token_enc=$2, phone=$3,
+          session_string_enc = null, status='connected', updated_at = now()
+        """,
+        user_id, bot_token_enc, label,
     )
 
 
