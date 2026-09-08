@@ -26,6 +26,8 @@ class TenantBot:
         self.client = TelegramClient(StringSession(session_string), int(api_id), api_hash)
         self._cfg = None
         self._cfg_at = 0
+        self._buffers = {}        # customer_id -> {texts, media, count, task}
+        self._last_key_alert = 0
 
     async def config(self):
         """Cache persona/products/keys for ~60s."""
@@ -98,6 +100,12 @@ class TenantBot:
         stored = text or "[sent media]"
         await db.add_message(self.user_id, customer_id, "user", stored)
 
+        # ── Mark the customer's message as read ──
+        try:
+            await self.client.send_read_acknowledge(customer_id)
+        except Exception:
+            pass
+
         # ── Paused? (still listened + stored above, just no reply) ──
         if not await db.is_bot_running(self.user_id):
             return
@@ -106,39 +114,75 @@ class TenantBot:
 
         gemini: GeminiClient = cfg["gemini"]
         if not gemini.keys:
-            log.warning(f"[{self.user_id}] no active AI keys")
+            await self._alert_no_keys()
             return
 
-        # ── Media understanding ──
+        # ── Media understanding (per message) ──
         media_ctx = ""
         if event.message.media:
             media_ctx = await self._analyze_media(event, gemini, text)
 
-        enriched = text
+        # ── Buffer + debounce: merge rapid messages into ONE reply ──
+        buf = self._buffers.setdefault(customer_id, {"texts": [], "media": [], "count": 0, "task": None})
+        if text:
+            buf["texts"].append(text)
         if media_ctx:
-            enriched = (text + f"\n[media: {media_ctx}]").strip() if text else f"[media: {media_ctx}]"
+            buf["media"].append(media_ctx)
+        buf["count"] += 1
+        if buf["task"]:
+            buf["task"].cancel()
+        buf["task"] = asyncio.create_task(self._flush(customer_id))
+
+    async def _flush(self, customer_id):
+        try:
+            await asyncio.sleep(config.DEBOUNCE_SECONDS)
+        except asyncio.CancelledError:
+            return
+
+        buf = self._buffers.pop(customer_id, None)
+        if not buf:
+            return
+
+        cfg = await self.config()
+        persona = cfg["persona"]
+        gemini: GeminiClient = cfg["gemini"]
+        if not persona:
+            return
+        if not gemini.keys:
+            await self._alert_no_keys()
+            return
+
+        # merged customer turn (text + media notes)
+        parts = list(buf["texts"])
+        for m in buf["media"]:
+            parts.append(f"[media: {m}]")
+        enriched = "\n".join(parts).strip() or "[sent media]"
 
         # ── Live data from the tenant's own website API (optional) ──
         try:
             integ = await db.get_integration(self.user_id)
             if integ and integ.get("enabled") and integ.get("api_url"):
-                live = await call_integration(integ, text or media_ctx or "")
+                live = await call_integration(integ, " ".join(buf["texts"]))
                 if live:
-                    enriched = (enriched + f"\n[live data: {live}]").strip()
+                    enriched += f"\n[live data: {live}]"
         except Exception as e:
             log.warning(f"integration error: {e}")
 
         # ── Generate reply ──
         system_prompt = build_system_prompt(persona, cfg["products"])
         history = await db.recent_messages(self.user_id, customer_id, config.MEMORY_TURNS)
-        reply = await gemini.reply(system_prompt, history[:-1], enriched)  # exclude the just-stored msg
+        n = buf["count"]
+        ctx = history[:-n] if 0 < n <= len(history) else (history if n == 0 else [])
+        reply = await gemini.reply(system_prompt, ctx, enriched)
         if not reply:
+            if not gemini.keys:
+                await self._alert_no_keys()
             return
 
         await db.add_message(self.user_id, customer_id, "assistant", reply)
 
         # ── Voice or text ──
-        want_voice = persona.get("voice_enabled", True) and voicelib.wants_voice(text)
+        want_voice = persona.get("voice_enabled", True) and any(voicelib.wants_voice(t) for t in buf["texts"])
         if want_voice:
             path = await voicelib.tts(reply, persona.get("voice_name", "en-US-JennyNeural"), self.user_id)
             if path:
@@ -155,9 +199,24 @@ class TenantBot:
         try:
             async with self.client.action(customer_id, "typing"):
                 await asyncio.sleep(min(1.0 + len(reply) / 60.0, 6.0))
-            await event.respond(reply)
+            await self.client.send_message(customer_id, reply)
         except Exception as e:
             log.warning(f"send failed: {e}")
+
+    async def _alert_no_keys(self):
+        """Tell the owner (Saved Messages) once/hour when no AI key works."""
+        if time.time() - self._last_key_alert < 3600:
+            return
+        self._last_key_alert = time.time()
+        log.warning(f"[{self.user_id}] no working AI keys")
+        try:
+            await self.client.send_message(
+                "me",
+                "⚠️ Autogram: your Gemini API key isn't working (limit reached or invalid). "
+                "Add or update your key in the dashboard to keep the assistant replying.",
+            )
+        except Exception:
+            pass
 
     async def _analyze_media(self, event, gemini: GeminiClient, text: str):
         msg = event.message
