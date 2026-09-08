@@ -202,3 +202,65 @@ async def store_integration(user_id, api_url, header_name, header_value_enc, ena
         """,
         user_id, api_url, header_name, header_value_enc, enabled, note,
     )
+
+
+# ── Media library ──────────────────────────────────────────
+async def get_media_items(user_id):
+    p = await pool()
+    rows = await p.fetch(
+        "select name, keyword, caption, url, kind, blur, spoiler, self_destruct from media_items where user_id = $1",
+        user_id,
+    )
+    return [dict(r) for r in rows]
+
+
+# ── Customers (persistent last-activity) + follow-ups ──────
+async def touch_customer(user_id, customer_id):
+    p = await pool()
+    await p.execute(
+        """insert into customers (user_id, customer_id, last_msg_at) values ($1,$2, now())
+           on conflict (user_id, customer_id) do update set last_msg_at = now()""",
+        user_id, customer_id,
+    )
+
+
+async def get_customers(user_id):
+    p = await pool()
+    rows = await p.fetch("select customer_id, last_msg_at from customers where user_id = $1", user_id)
+    return [dict(r) for r in rows]
+
+
+async def get_enabled_followups(user_id):
+    p = await pool()
+    rows = await p.fetch(
+        "select id, name, delay_days, message, media_id from followups where user_id = $1 and enabled = true order by delay_days",
+        user_id,
+    )
+    return [dict(r) for r in rows]
+
+
+async def get_followup_sends(user_id):
+    p = await pool()
+    rows = await p.fetch("select customer_id, followup_id from followup_sends where user_id = $1", user_id)
+    return {(r["customer_id"], r["followup_id"]) for r in rows}
+
+
+async def record_followup_send(user_id, customer_id, followup_id):
+    p = await pool()
+    await p.execute(
+        "insert into followup_sends (user_id, customer_id, followup_id) values ($1,$2,$3) on conflict do nothing",
+        user_id, customer_id, followup_id,
+    )
+
+
+async def clear_followup_sends(user_id, customer_id):
+    p = await pool()
+    await p.execute("delete from followup_sends where user_id = $1 and customer_id = $2", user_id, customer_id)
+
+
+async def get_media_by_id(media_id):
+    p = await pool()
+    row = await p.fetchrow(
+        "select name, caption, url, kind, blur, spoiler, self_destruct from media_items where id = $1", media_id
+    )
+    return dict(row) if row else None
