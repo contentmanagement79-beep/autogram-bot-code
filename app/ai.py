@@ -100,3 +100,18 @@ class GeminiClient:
             return (resp.text or "").strip()
 
         return await self._run(call)
+
+    async def summarize(self, transcript: str) -> Optional[str]:
+        def call(client, model):
+            resp = client.models.generate_content(
+                model=model,
+                contents=(
+                    "Summarize this customer chat in 2 short lines: what they want, key details "
+                    "(products, prices, quantities), and where things stand. Be concise, no preamble.\n\n"
+                    + transcript[:4000]
+                ),
+                config=types.GenerateContentConfig(temperature=0.3, max_output_tokens=160),
+            )
+            return (resp.text or "").strip()
+
+        return await self._run(call)
