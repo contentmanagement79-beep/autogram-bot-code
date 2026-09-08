@@ -133,8 +133,29 @@ async def store_ai_key(request):
         return web.json_response({"error": str(e)}, status=400)
 
 
+async def store_integration(request):
+    if not _authorized(request):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    data = await request.json()
+    user_id = data.get("user_id")
+    if not user_id:
+        return web.json_response({"error": "unauthorized"}, status=401)
+    api_url = (data.get("api_url") or "").strip() or None
+    header_name = (data.get("header_name") or "").strip() or None
+    header_value = (data.get("header_value") or "").strip()
+    enabled = bool(data.get("enabled"))
+    note = (data.get("note") or "").strip() or None
+    header_value_enc = crypto.encrypt(header_value) if header_value else None
+    try:
+        await db.store_integration(user_id, api_url, header_name, header_value_enc, enabled, note)
+        return web.json_response({"ok": True})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+
 def setup_internal_routes(app, manager):
     app["manager"] = manager
     app.router.add_post("/internal/telegram/send-code", send_code)
     app.router.add_post("/internal/telegram/verify-code", verify_code)
     app.router.add_post("/internal/ai-key", store_ai_key)
+    app.router.add_post("/internal/integration", store_integration)
