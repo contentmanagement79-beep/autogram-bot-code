@@ -154,3 +154,32 @@ async def set_single_ai_key(user_id, key_enc: str, label: str = "primary"):
                 "insert into ai_keys (user_id, provider, label, key_enc, status) values ($1,'gemini',$2,$3,'active')",
                 user_id, label, key_enc,
             )
+
+
+# ── Website API integration ────────────────────────────────
+async def get_integration(user_id):
+    p = await pool()
+    row = await p.fetchrow(
+        "select api_url, header_name, header_value_enc, enabled, note from integrations where user_id = $1",
+        user_id,
+    )
+    return dict(row) if row else None
+
+
+async def store_integration(user_id, api_url, header_name, header_value_enc, enabled, note):
+    """header_value_enc = None keeps the existing secret unchanged."""
+    p = await pool()
+    await p.execute(
+        """
+        insert into integrations (user_id, api_url, header_name, header_value_enc, enabled, note, updated_at)
+        values ($1, $2, $3, $4, $5, $6, now())
+        on conflict (user_id) do update set
+          api_url = $2,
+          header_name = $3,
+          header_value_enc = coalesce($4, integrations.header_value_enc),
+          enabled = $5,
+          note = $6,
+          updated_at = now()
+        """,
+        user_id, api_url, header_name, header_value_enc, enabled, note,
+    )
