@@ -126,6 +126,13 @@ class TenantBot:
         stored = text or "[sent media]"
         await db.add_message(self.user_id, customer_id, "user", stored)
 
+        # ── Track activity (persistent) + reset any follow-up sequence ──
+        try:
+            await db.touch_customer(self.user_id, customer_id)
+            await db.clear_followup_sends(self.user_id, customer_id)
+        except Exception as e:
+            log.warning(f"customer touch error: {e}")
+
         # ── Mark the customer's message as read ──
         try:
             await self.client.send_read_acknowledge(customer_id)
@@ -207,6 +214,12 @@ class TenantBot:
 
         await db.add_message(self.user_id, customer_id, "assistant", reply)
 
+        # ── Smart media: if a customer keyword matches a library item, send it ──
+        try:
+            await self._maybe_send_media(customer_id, " ".join(buf["texts"]))
+        except Exception as e:
+            log.warning(f"media send error: {e}")
+
         # ── Voice or text ──
         want_voice = persona.get("voice_enabled", True) and any(voicelib.wants_voice(t) for t in buf["texts"])
         if want_voice:
@@ -243,6 +256,86 @@ class TenantBot:
             )
         except Exception:
             pass
+
+    async def _maybe_send_media(self, customer_id, customer_text):
+        text = (customer_text or "").lower()
+        if not text:
+            return
+        items = await db.get_media_items(self.user_id)
+        for it in items:
+            kw = (it.get("keyword") or "").strip().lower()
+            if not kw:
+                continue
+            words = [w.strip() for w in kw.split(",") if w.strip()]
+            if any(w in text for w in words):
+                await self._send_media(customer_id, it)
+                return  # at most one media per reply
+
+    async def _send_media(self, customer_id, item):
+        url = item["url"]
+        if item.get("blur") and item.get("kind") == "image":
+            url = url.replace("/upload/", "/upload/e_blur:1500/", 1)  # Cloudinary blur
+        caption = item.get("caption") or ""
+        kwargs = {}
+        if caption:
+            kwargs["caption"] = caption
+        if item.get("spoiler"):
+            kwargs["spoiler"] = True
+        if item.get("self_destruct"):
+            kwargs["ttl_seconds"] = 30
+        try:
+            await self.client.send_file(customer_id, url, **kwargs)
+        except Exception as e:
+            log.warning(f"media send failed, retrying plain: {e}")
+            try:
+                await self.client.send_file(customer_id, url, caption=caption)
+            except Exception as e2:
+                log.warning(f"media send plain failed: {e2}")
+
+    async def run_followups(self):
+        """Send drip follow-ups to customers idle >= each rule's delay_days."""
+        from datetime import datetime, timezone
+        try:
+            followups = await db.get_enabled_followups(self.user_id)
+            if not followups:
+                return
+            customers = await db.get_customers(self.user_id)
+            if not customers:
+                return
+            sent = await db.get_followup_sends(self.user_id)
+            now = datetime.now(timezone.utc)
+            for c in customers:
+                last = c.get("last_msg_at")
+                if not last:
+                    continue
+                idle_days = (now - last).total_seconds() / 86400.0
+                for f in followups:  # ascending by delay_days
+                    if idle_days >= f["delay_days"] and (c["customer_id"], f["id"]) not in sent:
+                        await self._send_followup(c["customer_id"], f)
+                        await db.record_followup_send(self.user_id, c["customer_id"], f["id"])
+                        break  # at most one follow-up per customer per cycle
+        except Exception as e:
+            log.warning(f"[{self.user_id}] followup error: {e}")
+
+    async def _send_followup(self, customer_id, f):
+        msg = (f.get("message") or "").strip()
+        try:
+            if f.get("media_id"):
+                media = await db.get_media_by_id(f["media_id"])
+                if media:
+                    if msg and not media.get("caption"):
+                        media = dict(media)
+                        media["caption"] = msg
+                        await self._send_media(customer_id, media)
+                    else:
+                        if msg:
+                            await self.client.send_message(customer_id, msg)
+                        await self._send_media(customer_id, media)
+                    return
+            if msg:
+                await self.client.send_message(customer_id, msg)
+        except Exception as e:
+            log.warning(f"send followup failed: {e}")
 
     async def _analyze_media(self, event, gemini: GeminiClient, text: str):
         msg = event.message
