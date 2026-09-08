@@ -1,410 +1,219 @@
-import asyncio
-import logging
-import os
-import random
-import time
-from pathlib import Path
+"use client";
 
-from telethon import TelegramClient, events
-from telethon.sessions import StringSession
-from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, DocumentAttributeFilename
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { ChevronLeft } from "lucide-react";
+import { Field } from "@/components/sections/auth-card";
+import { createClient } from "@/lib/supabase/client";
+import { cn } from "@/lib/utils";
 
-from app import db, crypto, config
-from app.ai import GeminiClient
-from app.prompt import build_system_prompt
-from app.integration import call_integration
-from app import voice as voicelib
+type Tone = { formality: string; emoji: string; language: string; length: string };
+type PersonaForm = {
+  persona_name: string;
+  greeting: string;
+  role_bio: string;
+  topics: string;
+  limitations: string;
+  custom_instructions: string;
+  store_info: string;
+  disclose_ai: boolean;
+  voice_enabled: boolean;
+  cmd_takeover_stop: string;
+  cmd_takeover_start: string;
+  cmd_global_stop: string;
+  cmd_global_start: string;
+  tone_config: Tone;
+  hours_enabled: boolean;
+  hours_start: number;
+  hours_end: number;
+  tz_offset: number;
+  away_message: string;
+};
 
-log = logging.getLogger("bot")
-DOWNLOADS = "downloads"
-Path(DOWNLOADS).mkdir(exist_ok=True)
+const DEFAULTS: PersonaForm = {
+  persona_name: "Assistant",
+  greeting: "",
+  role_bio: "the store assistant",
+  topics: "",
+  limitations: "",
+  custom_instructions: "",
+  store_info: "",
+  disclose_ai: true,
+  voice_enabled: true,
+  cmd_takeover_stop: "//stop",
+  cmd_takeover_start: "//start",
+  cmd_global_stop: "//stopall",
+  cmd_global_start: "//startall",
+  tone_config: { formality: "balanced", emoji: "light", language: "auto", length: "medium" },
+  hours_enabled: false,
+  hours_start: 9,
+  hours_end: 22,
+  tz_offset: 6,
+  away_message: "",
+};
 
+export default function SettingsPage() {
+  const [form, setForm] = useState<PersonaForm>(DEFAULTS);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState<{ ok: boolean; msg: string } | null>(null);
 
-class TenantBot:
-    def __init__(self, user_id, mode="user", api_id=None, api_hash=None, session_string=None, bot_token=None):
-        self.user_id = user_id
-        self.mode = mode  # 'user' (personal account) | 'bot' (BotFather bot)
-        self._api_id = api_id
-        self._api_hash = api_hash
-        self._session = session_string
-        self._bot_token = bot_token
-        self.client = None
-        self._cfg = None
-        self._cfg_at = 0
-        self._buffers = {}        # customer_id -> {texts, media, count, task}
-        self._last_key_alert = 0
+  useEffect(() => {
+    (async () => {
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data } = await supabase.from("personas").select("*").eq("user_id", user.id).maybeSingle();
+      if (data) {
+        setForm({
+          ...DEFAULTS,
+          ...data,
+          tone_config: { ...DEFAULTS.tone_config, ...(data.tone_config ?? {}) },
+        });
+      }
+      setLoading(false);
+    })();
+  }, []);
 
-    async def config(self):
-        """Cache persona/products/keys for ~60s."""
-        if self._cfg and time.time() - self._cfg_at < 60:
-            return self._cfg
-        persona = await db.get_persona(self.user_id)
-        products = await db.get_products(self.user_id)
-        key_rows = await db.get_active_ai_keys(self.user_id)
-        keys = [{"id": r["id"], "key": crypto.decrypt(r["key_enc"])} for r in key_rows]
-        self._cfg = {"persona": persona, "products": products, "gemini": GeminiClient(keys)}
-        self._cfg_at = time.time()
-        return self._cfg
+  function set<K extends keyof PersonaForm>(key: K, value: PersonaForm[K]) {
+    setForm((f) => ({ ...f, [key]: value }));
+  }
+  function setTone<K extends keyof Tone>(key: K, value: string) {
+    setForm((f) => ({ ...f, tone_config: { ...f.tone_config, [key]: value } }));
+  }
 
-    async def start(self):
-        if self.mode == "bot":
-            if not config.PLATFORM_API_ID or not config.PLATFORM_API_HASH:
-                log.error(f"[{self.user_id}] PLATFORM_API_ID/HASH not set — cannot run bot mode")
-                await db_safe_status(self.user_id, "error")
-                return False
-            self.client = TelegramClient(StringSession(), config.PLATFORM_API_ID, config.PLATFORM_API_HASH)
-            try:
-                await self.client.start(bot_token=self._bot_token)
-            except Exception as e:
-                log.warning(f"[{self.user_id}] bot token failed: {e}")
-                await db_safe_status(self.user_id, "error")
-                return False
-        else:
-            self.client = TelegramClient(StringSession(self._session), int(self._api_id), self._api_hash)
-            await self.client.connect()
-            if not await self.client.is_user_authorized():
-                log.warning(f"[{self.user_id}] session not authorized — skipping")
-                await db_safe_status(self.user_id, "error")
-                return False
-        self.client.add_event_handler(self._on_message, events.NewMessage)
-        log.info(f"[{self.user_id}] bot started ({self.mode} mode)")
-        return True
+  async function save() {
+    setNote(null);
+    const cmds = [form.cmd_takeover_stop, form.cmd_takeover_start, form.cmd_global_stop, form.cmd_global_start].map((c) => c.trim());
+    if (cmds.some((c) => !c)) return setNote({ ok: false, msg: "Commands can't be empty." });
+    if (new Set(cmds).size !== 4) return setNote({ ok: false, msg: "All four commands must be different." });
 
-    async def stop(self):
-        try:
-            await self.client.disconnect()
-        except Exception:
-            pass
+    setSaving(true);
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { setSaving(false); return setNote({ ok: false, msg: "Not signed in." }); }
 
-    async def _on_message(self, event):
-        try:
-            await self._handle(event)
-        except Exception as e:
-            log.exception(f"[{self.user_id}] handler error: {e}")
+    const { error } = await supabase.from("personas").upsert({ user_id: user.id, ...form, updated_at: new Date().toISOString() });
+    setSaving(false);
+    setNote(error ? { ok: false, msg: error.message } : { ok: true, msg: "Saved." });
+  }
 
-    async def _handle(self, event):
-        # Only private 1-to-1 chats — ignore groups & channels entirely.
-        if not event.is_private:
-            return
+  if (loading) return <section className="dash"><p className="muted">Loading…</p></section>;
 
-        text = (event.raw_text or "").strip()
-        customer_id = event.chat_id
-        cfg = await self.config()
-        persona = cfg["persona"]
-        if not persona:
-            return
+  return (
+    <section className="dash">
+      <Link href="/dashboard" className="back-link"><ChevronLeft size={16} /> Back to dashboard</Link>
+      <h1 className="dash-title">Persona & tone</h1>
+      <p className="muted" style={{ marginTop: 8 }}>How your assistant talks and what it&apos;s allowed to do.</p>
 
-        # ── Owner commands (personal-account mode only; typed by the owner) ──
-        if self.mode == "user" and event.out:
-            cmds = {
-                persona["cmd_takeover_stop"]: ("cust", True),
-                persona["cmd_takeover_start"]: ("cust", False),
-                persona["cmd_global_stop"]: ("glob", True),
-                persona["cmd_global_start"]: ("glob", False),
-            }
-            if text in cmds:
-                scope, on = cmds[text]
-                if scope == "glob":
-                    await db.set_bot_running(self.user_id, not on)  # stop => running False
-                    note = "⏸️ Bot paused everywhere." if on else "▶️ Bot resumed everywhere."
-                else:
-                    await db.set_customer_paused(self.user_id, customer_id, on)
-                    note = "⏸️ Bot paused for this chat." if on else "▶️ Bot resumed for this chat."
-                try:
-                    await event.respond(note)
-                except Exception:
-                    pass
-            return  # never treat own messages as customer input
+      <div style={{ marginTop: 32 }}>
+        <div className="panel glass">
+          <p className="panel-title">Identity</p>
+          <p className="panel-desc">The name and role it uses with customers.</p>
+          <div className="form-grid">
+            <Field label="Assistant name" value={form.persona_name} onChange={(e) => set("persona_name", e.target.value)} />
+            <Field label="Role" value={form.role_bio} onChange={(e) => set("role_bio", e.target.value)} />
+          </div>
+          <div style={{ marginTop: 16 }}>
+            <label style={{ display: "block" }}>
+              <span className="field-label">Greeting (optional)</span>
+              <input className="field-input" value={form.greeting} onChange={(e) => set("greeting", e.target.value)} placeholder="Hey! How can I help today?" />
+            </label>
+          </div>
+        </div>
 
-        if event.out:
-            return  # ignore our own outgoing messages (bot mode / owner manual reply)
+        <div className="panel glass">
+          <p className="panel-title">Tone</p>
+          <p className="panel-desc">Match how you actually talk to customers.</p>
+          <div className="form-grid">
+            <Select label="Formality" value={form.tone_config.formality} onChange={(v) => setTone("formality", v)} options={[["casual", "Casual"], ["balanced", "Balanced"], ["formal", "Formal"]]} />
+            <Select label="Emoji" value={form.tone_config.emoji} onChange={(v) => setTone("emoji", v)} options={[["none", "None"], ["light", "Light"], ["heavy", "Lots"]]} />
+            <Select label="Language" value={form.tone_config.language} onChange={(v) => setTone("language", v)} options={[["auto", "Match the customer"], ["english", "English"], ["bangla", "Bangla"], ["banglish", "Banglish"]]} />
+            <Select label="Reply length" value={form.tone_config.length} onChange={(v) => setTone("length", v)} options={[["short", "Short"], ["medium", "Medium"], ["detailed", "Detailed"]]} />
+          </div>
+        </div>
 
-        if not text and not event.message.media:
-            return
+        <div className="panel glass">
+          <p className="panel-title">Knowledge & limits</p>
+          <p className="panel-desc">What it should talk about, and what it must never do.</p>
+          <Textarea label="Topics it handles" value={form.topics} onChange={(v) => set("topics", v)} placeholder="Products, pricing, payment, delivery, refunds…" />
+          <Textarea label="Store info" value={form.store_info} onChange={(v) => set("store_info", v)} placeholder="Payment methods, delivery time, refund policy…" />
+          <Textarea label="Limitations (never do)" value={form.limitations} onChange={(v) => set("limitations", v)} placeholder="Never invent prices. Never ask for card numbers or OTP. Escalate refunds to a human." />
+          <Textarea label="Custom instructions" value={form.custom_instructions} onChange={(v) => set("custom_instructions", v)} placeholder="Anything else about how it should behave." />
+        </div>
 
-        # ── Store customer message ──
-        stored = text or "[sent media]"
-        await db.add_message(self.user_id, customer_id, "user", stored)
+        <div className="panel glass">
+          <p className="panel-title">Take-over commands</p>
+          <p className="panel-desc">Type these in a chat to control the assistant. All four must be different.</p>
+          <div className="form-grid">
+            <Field label="Pause for this customer" value={form.cmd_takeover_stop} onChange={(e) => set("cmd_takeover_stop", e.target.value)} />
+            <Field label="Resume this customer" value={form.cmd_takeover_start} onChange={(e) => set("cmd_takeover_start", e.target.value)} />
+            <Field label="Pause everything" value={form.cmd_global_stop} onChange={(e) => set("cmd_global_stop", e.target.value)} />
+            <Field label="Resume everything" value={form.cmd_global_start} onChange={(e) => set("cmd_global_start", e.target.value)} />
+          </div>
+        </div>
 
-        # ── Track activity (persistent) + reset any follow-up sequence ──
-        try:
-            await db.touch_customer(self.user_id, customer_id)
-            await db.clear_followup_sends(self.user_id, customer_id)
-        except Exception as e:
-            log.warning(f"customer touch error: {e}")
+        <div className="panel glass">
+          <p className="panel-title">Business hours</p>
+          <p className="panel-desc">Optional. Reply only during set hours; outside them, send an away message.</p>
+          <Toggle label="Enable business hours" desc="When off, the bot replies 24/7." on={form.hours_enabled} onToggle={() => set("hours_enabled", !form.hours_enabled)} />
+          {form.hours_enabled && (
+            <>
+              <div className="form-grid" style={{ marginTop: 12 }}>
+                <label style={{ display: "block" }}><span className="field-label">Active from (hour 0–23)</span><input className="field-input" type="number" min={0} max={23} value={form.hours_start} onChange={(e) => set("hours_start", Number(e.target.value))} /></label>
+                <label style={{ display: "block" }}><span className="field-label">Active until (hour 0–23)</span><input className="field-input" type="number" min={0} max={23} value={form.hours_end} onChange={(e) => set("hours_end", Number(e.target.value))} /></label>
+              </div>
+              <label style={{ display: "block", marginTop: 16 }}><span className="field-label">Timezone offset from UTC (Bangladesh = 6)</span><input className="field-input" type="number" value={form.tz_offset} onChange={(e) => set("tz_offset", Number(e.target.value))} /></label>
+              <Textarea label="Away message (outside hours)" value={form.away_message} onChange={(v) => set("away_message", v)} placeholder="Thanks! We're offline right now — we'll reply during business hours 🙂" />
+            </>
+          )}
+        </div>
 
-        # ── Mark the customer's message as read ──
-        try:
-            await self.client.send_read_acknowledge(customer_id)
-        except Exception:
-            pass
+        <div className="panel glass">
+          <p className="panel-title">Behavior</p>
+          <Toggle label="Be honest it's an assistant" desc="Recommended — safer and keeps trust." on={form.disclose_ai} onToggle={() => set("disclose_ai", !form.disclose_ai)} />
+          <Toggle label="Allow voice replies" desc="Only sends voice when a customer asks for it." on={form.voice_enabled} onToggle={() => set("voice_enabled", !form.voice_enabled)} />
+        </div>
 
-        # ── Paused? (still listened + stored above, just no reply) ──
-        if not await db.is_bot_running(self.user_id):
-            return
-        if await db.is_customer_paused(self.user_id, customer_id):
-            return
+        <div className="save-bar">
+          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save changes"}</button>
+          {note && <span className={cn("save-note", note.ok ? "ok" : "err")}>{note.msg}</span>}
+        </div>
+      </div>
+    </section>
+  );
+}
 
-        gemini: GeminiClient = cfg["gemini"]
-        if not gemini.keys:
-            await self._alert_no_keys()
-            return
+function Select({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: [string, string][] }) {
+  return (
+    <label style={{ display: "block" }}>
+      <span className="field-label">{label}</span>
+      <select className="field-select" value={value} onChange={(e) => onChange(e.target.value)}>
+        {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+      </select>
+    </label>
+  );
+}
 
-        # ── Media understanding (per message) ──
-        media_ctx = ""
-        if event.message.media:
-            media_ctx = await self._analyze_media(event, gemini, text)
+function Textarea({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
+  return (
+    <label style={{ display: "block", marginTop: 16 }}>
+      <span className="field-label">{label}</span>
+      <textarea className="field-textarea" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />
+    </label>
+  );
+}
 
-        # ── Buffer + debounce: merge rapid messages into ONE reply ──
-        buf = self._buffers.setdefault(customer_id, {"texts": [], "media": [], "count": 0, "task": None})
-        if text:
-            buf["texts"].append(text)
-        if media_ctx:
-            buf["media"].append(media_ctx)
-        buf["count"] += 1
-        if buf["task"]:
-            buf["task"].cancel()
-        buf["task"] = asyncio.create_task(self._flush(customer_id))
-
-    async def _flush(self, customer_id):
-        try:
-            await asyncio.sleep(config.DEBOUNCE_SECONDS)
-        except asyncio.CancelledError:
-            return
-
-        buf = self._buffers.pop(customer_id, None)
-        if not buf:
-            return
-
-        cfg = await self.config()
-        persona = cfg["persona"]
-        gemini: GeminiClient = cfg["gemini"]
-        if not persona:
-            return
-        if not gemini.keys:
-            await self._alert_no_keys()
-            return
-
-        # merged customer turn (text + media notes)
-        parts = list(buf["texts"])
-        for m in buf["media"]:
-            parts.append(f"[media: {m}]")
-        enriched = "\n".join(parts).strip() or "[sent media]"
-
-        # ── Live data from the tenant's own website API (optional) ──
-        try:
-            integ = await db.get_integration(self.user_id)
-            if integ and integ.get("enabled") and integ.get("api_url"):
-                live = await call_integration(integ, " ".join(buf["texts"]))
-                if live:
-                    enriched += f"\n[live data: {live}]"
-        except Exception as e:
-            log.warning(f"integration error: {e}")
-
-        # ── Generate reply ──
-        system_prompt = build_system_prompt(persona, cfg["products"])
-        history = await db.recent_messages(self.user_id, customer_id, config.MEMORY_TURNS)
-        n = buf["count"]
-        ctx = history[:-n] if 0 < n <= len(history) else (history if n == 0 else [])
-        reply = await gemini.reply(system_prompt, ctx, enriched)
-        if not reply:
-            if not gemini.keys:
-                await self._alert_no_keys()
-            return
-
-        await db.add_message(self.user_id, customer_id, "assistant", reply)
-
-        # ── Smart media: if a customer keyword matches a library item, send it ──
-        try:
-            await self._maybe_send_media(customer_id, " ".join(buf["texts"]))
-        except Exception as e:
-            log.warning(f"media send error: {e}")
-
-        # ── Voice or text ──
-        want_voice = persona.get("voice_enabled", True) and any(voicelib.wants_voice(t) for t in buf["texts"])
-        if want_voice:
-            path = await voicelib.tts(reply, persona.get("voice_name", "en-US-JennyNeural"), self.user_id)
-            if path:
-                try:
-                    async with self.client.action(customer_id, "record-audio"):
-                        await asyncio.sleep(random.uniform(1.0, 2.0))
-                    await self.client.send_file(customer_id, path, voice_note=True)
-                    os.remove(path)
-                    return
-                except Exception as e:
-                    log.warning(f"voice send failed: {e}")
-
-        # text (with typing simulation)
-        try:
-            async with self.client.action(customer_id, "typing"):
-                await asyncio.sleep(min(1.0 + len(reply) / 60.0, 6.0))
-            await self.client.send_message(customer_id, reply)
-        except Exception as e:
-            log.warning(f"send failed: {e}")
-
-    async def _alert_no_keys(self):
-        """Tell the owner (Saved Messages) once/hour when no AI key works."""
-        if time.time() - self._last_key_alert < 3600:
-            return
-        self._last_key_alert = time.time()
-        log.warning(f"[{self.user_id}] no working AI keys")
-        try:
-            await self.client.send_message(
-                "me",
-                "⚠️ Autogram: your Gemini API key isn't working (limit reached or invalid). "
-                "Add or update your key in the dashboard to keep the assistant replying.",
-            )
-        except Exception:
-            pass
-
-    async def _maybe_send_media(self, customer_id, customer_text):
-        text = (customer_text or "").lower()
-        if not text:
-            return
-        items = await db.get_media_items(self.user_id)
-        for it in items:
-            kw = (it.get("keyword") or "").strip().lower()
-            if not kw:
-                continue
-            words = [w.strip() for w in kw.split(",") if w.strip()]
-            if any(w in text for w in words):
-                await self._send_media(customer_id, it)
-                return  # at most one media per reply
-
-    async def _send_media(self, customer_id, item):
-        url = item["url"]
-        if item.get("blur") and item.get("kind") == "image":
-            url = url.replace("/upload/", "/upload/e_blur:1500/", 1)  # Cloudinary blur
-        caption = item.get("caption") or ""
-        kwargs = {}
-        if caption:
-            kwargs["caption"] = caption
-        if item.get("spoiler"):
-            kwargs["spoiler"] = True
-        if item.get("self_destruct"):
-            kwargs["ttl_seconds"] = 30
-        try:
-            await self.client.send_file(customer_id, url, **kwargs)
-        except Exception as e:
-            log.warning(f"media send failed, retrying plain: {e}")
-            try:
-                await self.client.send_file(customer_id, url, caption=caption)
-            except Exception as e2:
-                log.warning(f"media send plain failed: {e2}")
-
-    async def run_followups(self):
-        """Send drip follow-ups to customers idle >= each rule's delay_days."""
-        from datetime import datetime, timezone
-        try:
-            followups = await db.get_enabled_followups(self.user_id)
-            if not followups:
-                return
-            customers = await db.get_customers(self.user_id)
-            if not customers:
-                return
-            sent = await db.get_followup_sends(self.user_id)
-            now = datetime.now(timezone.utc)
-            for c in customers:
-                last = c.get("last_msg_at")
-                if not last:
-                    continue
-                idle_days = (now - last).total_seconds() / 86400.0
-                for f in followups:  # ascending by delay_days
-                    if idle_days >= f["delay_days"] and (c["customer_id"], f["id"]) not in sent:
-                        await self._send_followup(c["customer_id"], f)
-                        await db.record_followup_send(self.user_id, c["customer_id"], f["id"])
-                        break  # at most one follow-up per customer per cycle
-        except Exception as e:
-            log.warning(f"[{self.user_id}] followup error: {e}")
-
-    async def _send_followup(self, customer_id, f):
-        msg = (f.get("message") or "").strip()
-        try:
-            if f.get("media_id"):
-                media = await db.get_media_by_id(f["media_id"])
-                if media:
-                    if msg and not media.get("caption"):
-                        media = dict(media)
-                        media["caption"] = msg
-                        await self._send_media(customer_id, media)
-                    else:
-                        if msg:
-                            await self.client.send_message(customer_id, msg)
-                        await self._send_media(customer_id, media)
-                    return
-            if msg:
-                await self.client.send_message(customer_id, msg)
-        except Exception as e:
-            log.warning(f"send followup failed: {e}")
-
-    async def _analyze_media(self, event, gemini: GeminiClient, text: str):
-        msg = event.message
-        ctx = f'Customer wrote: "{text}"' if text else ""
-        try:
-            mtype = _media_type(msg)
-            if mtype == "document_text":
-                fp = await self._download(msg, "doc")
-                if fp:
-                    content = voicelib.extract_document_text(fp)
-                    _rm(fp)
-                    if content:
-                        return f"customer shared a document. Content preview: {content[:800]}"
-                    return "customer shared a document"
-            if mtype == "photo":
-                fp = await self._download(msg, "img.jpg")
-                if fp:
-                    data = Path(fp).read_bytes()
-                    _rm(fp)
-                    r = await gemini.see_image(data, ctx)
-                    return r or "customer sent a photo"
-            if mtype == "voice":
-                fp = await self._download(msg, "voice.ogg")
-                if fp:
-                    r = await gemini.hear_audio(fp, ctx)
-                    _rm(fp)
-                    return r or "customer sent a voice message"
-        except Exception as e:
-            log.warning(f"media analyze error: {e}")
-        return ""
-
-    async def _download(self, msg, name):
-        try:
-            path = os.path.join(DOWNLOADS, f"{int(time.time()*1000)}_{name}")
-            await asyncio.wait_for(self.client.download_media(msg, path), timeout=45.0)
-            return path
-        except Exception as e:
-            log.warning(f"download error: {e}")
-            return None
-
-
-def _media_type(msg):
-    m = msg.media
-    if isinstance(m, MessageMediaPhoto):
-        return "photo"
-    if isinstance(m, MessageMediaDocument):
-        doc = m.document
-        mime = doc.mime_type or ""
-        if mime.startswith("image/"):
-            return "photo"
-        if mime.startswith("audio/"):
-            for a in doc.attributes:
-                if getattr(a, "voice", False):
-                    return "voice"
-            return "voice"
-        return "document_text"
-    return None
-
-
-def _rm(p):
-    try:
-        os.remove(p)
-    except Exception:
-        pass
-
-
-async def db_safe_status(user_id, status):
-    try:
-        p = await db.pool()
-        await p.execute("update telegram_accounts set status=$2 where user_id=$1", user_id, status)
-    except Exception:
-        pass
+function Toggle({ label, desc, on, onToggle }: { label: string; desc: string; on: boolean; onToggle: () => void }) {
+  return (
+    <div className="switch-row">
+      <div>
+        <div>{label}</div>
+        <div className="muted" style={{ fontSize: 13, marginTop: 2 }}>{desc}</div>
+      </div>
+      <button type="button" className={cn("switch", on && "on")} onClick={onToggle} aria-pressed={on}>
+        <span className="switch-knob" />
+      </button>
+    </div>
+  );
+}
