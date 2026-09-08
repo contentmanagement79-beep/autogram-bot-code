@@ -6,6 +6,7 @@ from aiohttp import web
 
 from app import db, crypto, config
 from app.bot import TenantBot
+from app.ai import GeminiClient
 
 log = logging.getLogger("manager")
 
@@ -15,6 +16,7 @@ class BotManager:
         self.bots: dict = {}  # user_id -> TenantBot
         self._last_purge = 0
         self._last_followup = 0
+        self._last_summary = 0
 
     async def sync(self):
         """Start runners for newly-connected connections, stop removed ones."""
@@ -75,6 +77,46 @@ class BotManager:
                 self._last_followup = time.time()
                 for bot in list(self.bots.values()):
                     await bot.run_followups()
+
+            # build persistent per-customer summaries ~once a day
+            if time.time() - self._last_summary > 86400:
+                self._last_summary = time.time()
+                await self.run_summaries()
+
+    async def run_summaries(self):
+        """Summarise recent conversations per customer so the bot stays
+        consistent even after raw messages are purged (7 days)."""
+        from datetime import datetime, timezone
+        seen = set()
+        for runner in list(self.bots.values()):
+            uid = runner.user_id
+            if uid in seen:
+                continue
+            seen.add(uid)
+            try:
+                key_rows = await db.get_active_ai_keys(uid)
+                if not key_rows:
+                    continue
+                gem = GeminiClient([{"id": r["id"], "key": crypto.decrypt(r["key_enc"])} for r in key_rows])
+                customers = await db.get_customers(uid)
+                now = datetime.now(timezone.utc)
+                count = 0
+                for c in customers:
+                    if count >= 50:  # cap per user per day
+                        break
+                    last = c.get("last_msg_at")
+                    if not last or (now - last).total_seconds() > 2 * 86400:
+                        continue  # only recently-active customers
+                    msgs = await db.recent_messages(uid, c["customer_id"], 30)
+                    if len(msgs) < 4:
+                        continue
+                    transcript = "\n".join(f'{m["role"]}: {m["content"]}' for m in msgs)
+                    summary = await gem.summarize(transcript)
+                    if summary:
+                        await db.upsert_customer_profile(uid, c["customer_id"], summary)
+                        count += 1
+            except Exception as e:
+                log.warning(f"summary error for {uid}: {e}")
 
 
 # ── keep-alive web server (Render needs a bound port) ──────
