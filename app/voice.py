@@ -9,11 +9,18 @@ log = logging.getLogger("voice")
 VOICE_DIR = "voice_tmp"
 Path(VOICE_DIR).mkdir(exist_ok=True)
 
-# Bengali + English phrases that mean "send a voice message"
+# Bengali + English + Banglish phrases that mean "send a voice message"
 _VOICE_KW = [
     "voice dao", "voice de", "voice pathao", "voice ta dao", "voice ta pathao",
     "voice message", "voice note", "send voice", "send a voice", "voice reply",
     "audio message", "speak", "bolo", "voice a bolo", "voice chai", "voice lagbe",
+    "audio dao", "audio de", "audio pathao", "audio chai",
+    # বাংলা হরফের ট্রিগার
+    "ভয়েস দাও", "ভয়েস দে", "ভয়েস পাঠাও", "ভয়েস মেসেজ", "ভয়েস নোট", "ভয়েস রিপ্লাই",
+    "ভয়েসে বলো", "মুখে বলো", "ভয়েস চাই", "ভয়েস লাগবে", "অডিও দাও", 
+    "অডিও পাঠাও", "অডিও মেসেজ", "কথা বলো",
+    # 'য়' এর বদলে 'য়' (অনেক কিবোর্ডে আলাদা হয়) দিয়ে ট্রিগার
+    "ভয়েস দাও", "ভয়েস দে", "ভয়েস পাঠাও", "ভয়েস মেসেজ", "ভয়েস নোট", "ভয়েসে বলো", "ভয়েস চাই"
 ]
 
 
@@ -21,10 +28,18 @@ def wants_voice(text: str) -> bool:
     if not text:
         return False
     t = text.lower()
+    
+    # ১. সরাসরি কিওয়ার্ড মিলে গেলে
     if any(kw in t for kw in _VOICE_KW):
         return True
-    if "voice" in t and any(a in t for a in ["dao", "de", "pathao", "send", "chai", "lagbe", "note", "bolo"]):
+        
+    # ২. বাক্যের মধ্যে "voice/audio" এবং "দাও/পাঠাও" আলাদা থাকলেও যেন ধরে
+    voice_words = ["voice", "audio", "ভয়েস", "ভয়েস", "অডিও"]
+    action_words = ["dao", "de", "pathao", "send", "chai", "lagbe", "note", "bolo", "reply", "দাও", "দে", "পাঠাও", "বলো", "বল", "চাই", "লাগবে", "করো", "দিন"]
+    
+    if any(v in t for v in voice_words) and any(a in t for a in action_words):
         return True
+        
     return False
 
 
