@@ -29,12 +29,17 @@ class BotManager:
             if uid in self.bots:
                 continue
             try:
-                bot = TenantBot(
-                    uid,
-                    t["api_id"],
-                    crypto.decrypt(t["api_hash_enc"]),
-                    crypto.decrypt(t["session_string_enc"]),
-                )
+                mode = t.get("mode") or "user"
+                if mode == "bot":
+                    bot = TenantBot(uid, mode="bot", bot_token=crypto.decrypt(t["bot_token_enc"]))
+                else:
+                    bot = TenantBot(
+                        uid,
+                        mode="user",
+                        api_id=t["api_id"],
+                        api_hash=crypto.decrypt(t["api_hash_enc"]),
+                        session_string=crypto.decrypt(t["session_string_enc"]),
+                    )
                 ok = await bot.start()
                 if ok:
                     self.bots[uid] = bot
