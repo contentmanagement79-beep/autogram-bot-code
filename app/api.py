@@ -153,9 +153,51 @@ async def store_integration(request):
         return web.json_response({"error": str(e)}, status=400)
 
 
+async def connect_bot(request):
+    if not _authorized(request):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    data = await request.json()
+    user_id = data.get("user_id")
+    token = (data.get("bot_token") or "").strip()
+    if not user_id or not token:
+        return web.json_response({"error": "Bot token is required."}, status=400)
+    if not config.PLATFORM_API_ID or not config.PLATFORM_API_HASH:
+        return web.json_response({"error": "Platform is not configured for bot mode."}, status=500)
+
+    # validate the token by logging in as the bot
+    from telethon import TelegramClient
+    from telethon.sessions import StringSession
+    client = TelegramClient(StringSession(), config.PLATFORM_API_ID, config.PLATFORM_API_HASH)
+    try:
+        await client.start(bot_token=token)
+        me = await client.get_me()
+        username = ("@" + me.username) if getattr(me, "username", None) else "bot"
+    except Exception as e:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        return web.json_response({"error": f"Invalid bot token: {e}"}, status=400)
+    try:
+        await client.disconnect()
+    except Exception:
+        pass
+
+    await db.store_bot(user_id, crypto.encrypt(token), label=username)
+
+    mgr = request.app.get("manager")
+    if mgr:
+        try:
+            await mgr.sync()
+        except Exception as e:
+            log.warning(f"sync after bot connect: {e}")
+    return web.json_response({"ok": True, "username": username})
+
+
 def setup_internal_routes(app, manager):
     app["manager"] = manager
     app.router.add_post("/internal/telegram/send-code", send_code)
     app.router.add_post("/internal/telegram/verify-code", verify_code)
+    app.router.add_post("/internal/telegram/connect-bot", connect_bot)
     app.router.add_post("/internal/ai-key", store_ai_key)
     app.router.add_post("/internal/integration", store_integration)
