@@ -14,3 +14,4 @@ INTERNAL_API_TOKEN = os.getenv("INTERNAL_API_TOKEN", "")
 
 MEMORY_TURNS = 16          # how many past messages to send to the model
 MEMORY_RETENTION_DAYS = 7  # raw messages older than this are purged
+DEBOUNCE_SECONDS = 4       # wait this long for rapid follow-up messages, then reply once
