@@ -17,18 +17,18 @@ async def pool() -> asyncpg.Pool:
 
 
 # ── Tenants to run ─────────────────────────────────────────
-async def get_connected_tenants():
-    """Users with a connected Telegram account (personal userbot OR BotFather bot)."""
+async def get_connected_connections():
+    """Each connected Telegram connection (a user may have one 'user' + one 'bot')."""
     p = await pool()
     rows = await p.fetch(
         """
-        select t.user_id, coalesce(t.mode,'user') as mode,
-               t.api_id, t.api_hash_enc, t.session_string_enc, t.bot_token_enc
-        from telegram_accounts t
-        where t.status = 'connected'
+        select id, user_id, coalesce(mode,'user') as mode,
+               api_id, api_hash_enc, session_string_enc, bot_token_enc
+        from telegram_accounts
+        where status = 'connected'
           and (
-            (coalesce(t.mode,'user') = 'user' and t.session_string_enc is not null)
-            or (t.mode = 'bot' and t.bot_token_enc is not null)
+            (coalesce(mode,'user') = 'user' and session_string_enc is not null)
+            or (mode = 'bot' and bot_token_enc is not null)
           )
         """
     )
@@ -133,9 +133,9 @@ async def store_session(user_id, api_id: int, api_hash_enc: str, phone: str, ses
         """
         insert into telegram_accounts (user_id, mode, api_id, api_hash_enc, phone, session_string_enc, status, updated_at)
         values ($1,'user',$2,$3,$4,$5,'connected', now())
-        on conflict (user_id) do update set
-          mode='user', api_id = $2, api_hash_enc = $3, phone = $4, session_string_enc = $5,
-          bot_token_enc = null, status = 'connected', updated_at = now()
+        on conflict (user_id, mode) do update set
+          api_id = $2, api_hash_enc = $3, phone = $4, session_string_enc = $5,
+          status = 'connected', updated_at = now()
         """,
         user_id, api_id, api_hash_enc, phone, session_enc,
     )
@@ -147,9 +147,8 @@ async def store_bot(user_id, bot_token_enc: str, label: str = ""):
         """
         insert into telegram_accounts (user_id, mode, bot_token_enc, phone, status, updated_at)
         values ($1,'bot',$2,$3,'connected', now())
-        on conflict (user_id) do update set
-          mode='bot', bot_token_enc=$2, phone=$3,
-          session_string_enc = null, status='connected', updated_at = now()
+        on conflict (user_id, mode) do update set
+          bot_token_enc=$2, phone=$3, status='connected', updated_at = now()
         """,
         user_id, bot_token_enc, label,
     )
@@ -215,18 +214,18 @@ async def get_media_items(user_id):
 
 
 # ── Customers (persistent last-activity) + follow-ups ──────
-async def touch_customer(user_id, customer_id):
+async def touch_customer(user_id, customer_id, via="user"):
     p = await pool()
     await p.execute(
-        """insert into customers (user_id, customer_id, last_msg_at) values ($1,$2, now())
-           on conflict (user_id, customer_id) do update set last_msg_at = now()""",
-        user_id, customer_id,
+        """insert into customers (user_id, customer_id, last_msg_at, via) values ($1,$2, now(), $3)
+           on conflict (user_id, customer_id) do update set last_msg_at = now(), via = $3""",
+        user_id, customer_id, via,
     )
 
 
 async def get_customers(user_id):
     p = await pool()
-    rows = await p.fetch("select customer_id, last_msg_at from customers where user_id = $1", user_id)
+    rows = await p.fetch("select customer_id, last_msg_at, via from customers where user_id = $1", user_id)
     return [dict(r) for r in rows]
 
 
