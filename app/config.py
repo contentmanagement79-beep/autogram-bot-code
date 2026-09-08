@@ -12,6 +12,11 @@ PORT = int(os.getenv("PORT", "10000"))
 SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL", "120"))
 INTERNAL_API_TOKEN = os.getenv("INTERNAL_API_TOKEN", "")
 
+# Platform Telegram app credentials (from my.telegram.org) — used to run
+# BotFather bots (bot mode). One pair for all bots.
+PLATFORM_API_ID = int(os.getenv("PLATFORM_API_ID", "0") or "0")
+PLATFORM_API_HASH = os.getenv("PLATFORM_API_HASH", "")
+
 MEMORY_TURNS = 16          # how many past messages to send to the model
 MEMORY_RETENTION_DAYS = 7  # raw messages older than this are purged
 DEBOUNCE_SECONDS = 4       # wait this long for rapid follow-up messages, then reply once
