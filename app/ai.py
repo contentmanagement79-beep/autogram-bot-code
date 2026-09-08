@@ -26,22 +26,29 @@ class GeminiClient:
             return None
         for k in list(self.keys):
             client = self._client_for(k["key"])
+            invalid_key = False
             for model in config.GEMINI_MODELS:
                 try:
                     return await asyncio.to_thread(make_call, client, model)
                 except Exception as e:
-                    msg = str(e)
-                    if "429" in msg or "quota" in msg.lower() or "exhaust" in msg.lower():
-                        log.warning("Gemini key exhausted, rotating.")
-                        try:
-                            await db.mark_ai_key(k["id"], "exhausted")
-                        except Exception:
-                            pass
+                    msg = str(e).lower()
+                    if "api key not valid" in msg or "api_key_invalid" in msg or "invalid api key" in msg:
+                        invalid_key = True
+                        break
+                    if "429" in msg or "quota" in msg or "exhaust" in msg or "resource_exhausted" in msg:
+                        # transient (rate/quota): skip this key now, don't mark permanently
+                        log.warning("Gemini key hit its limit, rotating to next.")
                         self.keys = [x for x in self.keys if x["id"] != k["id"]]
-                        break  # move to next key
-                    else:
-                        log.warning(f"Gemini model {model} error: {msg[:120]}")
-                        continue  # try next model with same key
+                        break
+                    log.warning(f"Gemini model {model} error: {str(e)[:120]}")
+                    continue  # try next model with same key
+            if invalid_key:
+                log.warning("Gemini key invalid — marking it in the dashboard.")
+                try:
+                    await db.mark_ai_key(k["id"], "invalid")
+                except Exception:
+                    pass
+                self.keys = [x for x in self.keys if x["id"] != k["id"]]
         return None
 
     async def reply(self, system_prompt: str, history: list, user_msg: str) -> Optional[str]:
