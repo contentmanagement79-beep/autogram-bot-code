@@ -161,27 +161,18 @@ async def connect_bot(request):
     token = (data.get("bot_token") or "").strip()
     if not user_id or not token:
         return web.json_response({"error": "Bot token is required."}, status=400)
-    if not config.PLATFORM_API_ID or not config.PLATFORM_API_HASH:
-        return web.json_response({"error": "Platform is not configured for bot mode."}, status=500)
 
-    # validate the token by logging in as the bot
-    from telethon import TelegramClient
-    from telethon.sessions import StringSession
-    client = TelegramClient(StringSession(), config.PLATFORM_API_ID, config.PLATFORM_API_HASH)
+    # validate via Bot API getMe (no api_id/hash needed)
+    import aiohttp
     try:
-        await client.start(bot_token=token)
-        me = await client.get_me()
-        username = ("@" + me.username) if getattr(me, "username", None) else "bot"
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+            async with s.get(f"https://api.telegram.org/bot{token}/getMe") as r:
+                info = await r.json()
     except Exception as e:
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
-        return web.json_response({"error": f"Invalid bot token: {e}"}, status=400)
-    try:
-        await client.disconnect()
-    except Exception:
-        pass
+        return web.json_response({"error": f"Could not reach Telegram: {e}"}, status=400)
+    if not info.get("ok"):
+        return web.json_response({"error": "Invalid bot token."}, status=400)
+    username = "@" + info["result"].get("username", "bot")
 
     await db.store_bot(user_id, crypto.encrypt(token), label=username)
 
