@@ -164,10 +164,11 @@ class TenantBot:
                         pass
                 return
 
-        # ── Instant media on keyword (no wait for the AI reply) ──
+        # ── Instant keyword media. If matched, send ONLY the media (no AI reply). ──
         if text:
             try:
-                await self._maybe_send_media(customer_id, text)
+                if await self._maybe_send_media(customer_id, text):
+                    return
             except Exception as e:
                 log.warning(f"media send error: {e}")
 
@@ -229,6 +230,12 @@ class TenantBot:
 
         # ── Generate reply ──
         system_prompt = build_system_prompt(persona, cfg["products"])
+        try:
+            profile = await db.get_customer_profile(self.user_id, customer_id)
+            if profile:
+                system_prompt += f"\n\nWHAT YOU ALREADY KNOW ABOUT THIS CUSTOMER (from earlier chats):\n{profile}"
+        except Exception:
+            pass
         history = await db.recent_messages(self.user_id, customer_id, config.MEMORY_TURNS)
         n = buf["count"]
         ctx = history[:-n] if 0 < n <= len(history) else (history if n == 0 else [])
@@ -277,10 +284,10 @@ class TenantBot:
         except Exception:
             pass
 
-    async def _maybe_send_media(self, customer_id, customer_text):
+    async def _maybe_send_media(self, customer_id, customer_text) -> bool:
         text = (customer_text or "").lower()
         if not text:
-            return
+            return False
         items = await db.get_media_items(self.user_id)
         for it in items:
             kw = (it.get("keyword") or "").strip().lower()
@@ -290,10 +297,11 @@ class TenantBot:
             if any(w in text for w in words):
                 ck = (customer_id, it.get("name"))
                 if time.time() - self._media_cooldown.get(ck, 0) < 60:
-                    return  # don't resend the same media within 60s
+                    return True  # matched recently — still counts as handled
                 self._media_cooldown[ck] = time.time()
                 await self._send_media(customer_id, it)
-                return  # at most one media per reply
+                return True
+        return False
 
     async def _send_media(self, customer_id, item):
         url = item["url"]
