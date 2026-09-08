@@ -21,9 +21,14 @@ Path(DOWNLOADS).mkdir(exist_ok=True)
 
 
 class TenantBot:
-    def __init__(self, user_id, api_id, api_hash, session_string):
+    def __init__(self, user_id, mode="user", api_id=None, api_hash=None, session_string=None, bot_token=None):
         self.user_id = user_id
-        self.client = TelegramClient(StringSession(session_string), int(api_id), api_hash)
+        self.mode = mode  # 'user' (personal account) | 'bot' (BotFather bot)
+        self._api_id = api_id
+        self._api_hash = api_hash
+        self._session = session_string
+        self._bot_token = bot_token
+        self.client = None
         self._cfg = None
         self._cfg_at = 0
         self._buffers = {}        # customer_id -> {texts, media, count, task}
@@ -42,13 +47,27 @@ class TenantBot:
         return self._cfg
 
     async def start(self):
-        await self.client.connect()
-        if not await self.client.is_user_authorized():
-            log.warning(f"[{self.user_id}] session not authorized — skipping")
-            await db_safe_status(self.user_id, "error")
-            return False
+        if self.mode == "bot":
+            if not config.PLATFORM_API_ID or not config.PLATFORM_API_HASH:
+                log.error(f"[{self.user_id}] PLATFORM_API_ID/HASH not set — cannot run bot mode")
+                await db_safe_status(self.user_id, "error")
+                return False
+            self.client = TelegramClient(StringSession(), config.PLATFORM_API_ID, config.PLATFORM_API_HASH)
+            try:
+                await self.client.start(bot_token=self._bot_token)
+            except Exception as e:
+                log.warning(f"[{self.user_id}] bot token failed: {e}")
+                await db_safe_status(self.user_id, "error")
+                return False
+        else:
+            self.client = TelegramClient(StringSession(self._session), int(self._api_id), self._api_hash)
+            await self.client.connect()
+            if not await self.client.is_user_authorized():
+                log.warning(f"[{self.user_id}] session not authorized — skipping")
+                await db_safe_status(self.user_id, "error")
+                return False
         self.client.add_event_handler(self._on_message, events.NewMessage)
-        log.info(f"[{self.user_id}] bot started")
+        log.info(f"[{self.user_id}] bot started ({self.mode} mode)")
         return True
 
     async def stop(self):
@@ -64,6 +83,10 @@ class TenantBot:
             log.exception(f"[{self.user_id}] handler error: {e}")
 
     async def _handle(self, event):
+        # Only private 1-to-1 chats — ignore groups & channels entirely.
+        if not event.is_private:
+            return
+
         text = (event.raw_text or "").strip()
         customer_id = event.chat_id
         cfg = await self.config()
@@ -71,8 +94,8 @@ class TenantBot:
         if not persona:
             return
 
-        # ── Owner commands (typed by the account owner, outgoing) ──
-        if event.out:
+        # ── Owner commands (personal-account mode only; typed by the owner) ──
+        if self.mode == "user" and event.out:
             cmds = {
                 persona["cmd_takeover_stop"]: ("cust", True),
                 persona["cmd_takeover_start"]: ("cust", False),
@@ -92,6 +115,9 @@ class TenantBot:
                 except Exception:
                     pass
             return  # never treat own messages as customer input
+
+        if event.out:
+            return  # ignore our own outgoing messages (bot mode / owner manual reply)
 
         if not text and not event.message.media:
             return
