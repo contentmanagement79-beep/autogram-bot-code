@@ -44,7 +44,8 @@ class TenantBot:
         products = await db.get_products(self.user_id)
         key_rows = await db.get_active_ai_keys(self.user_id)
         keys = [{"id": r["id"], "key": crypto.decrypt(r["key_enc"])} for r in key_rows]
-        self._cfg = {"persona": persona, "products": products, "gemini": GeminiClient(keys)}
+        access = await db.get_access(self.user_id)
+        self._cfg = {"persona": persona, "products": products, "gemini": GeminiClient(keys), "access": access}
         self._cfg_at = time.time()
         return self._cfg
 
@@ -165,7 +166,7 @@ class TenantBot:
                 return
 
         # ── Instant keyword media. If matched, send ONLY the media (no AI reply). ──
-        if text:
+        if text and cfg["access"].get("media", True):
             try:
                 if await self._maybe_send_media(customer_id, text):
                     return
@@ -221,7 +222,7 @@ class TenantBot:
         # ── Live data from the tenant's own website API (optional) ──
         try:
             integ = await db.get_integration(self.user_id)
-            if integ and integ.get("enabled") and integ.get("api_url"):
+            if integ and integ.get("enabled") and integ.get("api_url") and cfg["access"].get("integration", True):
                 live = await call_integration(integ, " ".join(buf["texts"]))
                 if live:
                     enriched += f"\n[live data: {live}]"
@@ -248,7 +249,7 @@ class TenantBot:
         await db.add_message(self.user_id, customer_id, "assistant", reply)
 
         # ── Voice or text ──
-        want_voice = persona.get("voice_enabled", True) and any(voicelib.wants_voice(t) for t in buf["texts"])
+        want_voice = persona.get("voice_enabled", True) and cfg["access"].get("voice", True) and any(voicelib.wants_voice(t) for t in buf["texts"])
         if want_voice:
             path = await voicelib.tts(reply, persona.get("voice_name", "en-US-JennyNeural"), self.user_id)
             if path:
@@ -328,6 +329,9 @@ class TenantBot:
         """Send drip follow-ups to customers idle >= each rule's delay_days."""
         from datetime import datetime, timezone
         try:
+            cfg = await self.config()
+            if not cfg["access"].get("followups", True):
+                return
             followups = await db.get_enabled_followups(self.user_id)
             if not followups:
                 return
