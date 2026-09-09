@@ -282,3 +282,36 @@ async def upsert_customer_profile(user_id, customer_id, summary: str):
            on conflict (user_id, customer_id) do update set summary = $3, updated_at = now()""",
         user_id, customer_id, summary,
     )
+
+
+# ── Feature access (monetization) ──────────────────────────
+async def get_access(user_id):
+    """Return {feature: bool} — is each feature usable for this user right now."""
+    from datetime import datetime, timezone
+    p = await pool()
+    try:
+        mon = await p.fetchval("select monetization_on from platform_settings where id = 1")
+    except Exception:
+        mon = False
+    if not mon:
+        return _all_true()
+    try:
+        flags = {r["key"]: r["tier"] for r in await p.fetch("select key, tier from feature_flags")}
+    except Exception:
+        flags = {}
+    row = await p.fetchrow("select plan, expires_at from plans where user_id = $1", user_id)
+    is_pro = bool(row and row["plan"] == "pro" and (row["expires_at"] is None or row["expires_at"] > datetime.now(timezone.utc)))
+
+    def allowed(feature):
+        if flags.get(feature, "free") != "pro":
+            return True
+        return is_pro
+
+    return {k: allowed(k) for k in _FEATURES}
+
+
+_FEATURES = ["media", "voice", "followups", "integration", "conversations", "customers", "business_hours", "bot_mode"]
+
+
+def _all_true():
+    return {k: True for k in _FEATURES}
