@@ -18,17 +18,19 @@ async def pool() -> asyncpg.Pool:
 
 # ── Tenants to run ─────────────────────────────────────────
 async def get_connected_connections():
-    """Each connected Telegram connection (a user may have one 'user' + one 'bot')."""
+    """Each connected Telegram connection (skips suspended accounts)."""
     p = await pool()
     rows = await p.fetch(
         """
-        select id, user_id, coalesce(mode,'user') as mode,
-               api_id, api_hash_enc, session_string_enc, bot_token_enc
-        from telegram_accounts
-        where status = 'connected'
+        select t.id, t.user_id, coalesce(t.mode,'user') as mode,
+               t.api_id, t.api_hash_enc, t.session_string_enc, t.bot_token_enc
+        from telegram_accounts t
+        left join plans pl on pl.user_id = t.user_id
+        where t.status = 'connected'
+          and coalesce(pl.suspended, false) = false
           and (
-            (coalesce(mode,'user') = 'user' and session_string_enc is not null)
-            or (mode = 'bot' and bot_token_enc is not null)
+            (coalesce(t.mode,'user') = 'user' and t.session_string_enc is not null)
+            or (t.mode = 'bot' and t.bot_token_enc is not null)
           )
         """
     )
