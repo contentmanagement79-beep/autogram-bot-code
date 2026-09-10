@@ -45,7 +45,8 @@ class TenantBot:
         key_rows = await db.get_gemini_keys_for(self.user_id)
         keys = [{"id": r["id"], "key": crypto.decrypt(r["key_enc"]), "source": r["source"]} for r in key_rows]
         access = await db.get_access(self.user_id)
-        self._cfg = {"persona": persona, "products": products, "gemini": GeminiClient(keys), "access": access}
+        voice_provider = await db.get_voice_provider_for(self.user_id)
+        self._cfg = {"persona": persona, "products": products, "gemini": GeminiClient(keys), "access": access, "voice_provider": voice_provider}
         self._cfg_at = time.time()
         return self._cfg
 
@@ -251,7 +252,8 @@ class TenantBot:
         # ── Voice or text ──
         want_voice = persona.get("voice_enabled", True) and cfg["access"].get("voice", True) and any(voicelib.wants_voice(t) for t in buf["texts"])
         if want_voice:
-            path = await voicelib.tts(reply, persona.get("voice_name", "en-US-JennyNeural"), self.user_id)
+            prov = cfg.get("voice_provider")
+            path = await voicelib.synth_via_provider(prov, reply) if prov else await voicelib.tts(reply, persona.get("voice_name", "en-US-JennyNeural"), self.user_id)
             if path:
                 try:
                     async with self.client.action(customer_id, "record-audio"):
