@@ -226,6 +226,27 @@ async def store_voice_provider(request):
         return web.json_response({"error": str(e)}, status=400)
 
 
+async def test_integration(request):
+    if not _authorized(request):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    d = await request.json()
+    user_id = d.get("user_id")
+    query = (d.get("query") or "test").strip()
+    if not user_id:
+        return web.json_response({"error": "unauthorized"}, status=401)
+    integ = await db.get_integration(user_id)
+    if not integ or not integ.get("api_url"):
+        return web.json_response({"ok": False, "error": "No integration saved yet."})
+    from app.integration import call_integration
+    try:
+        result = await call_integration(integ, query)
+        if result:
+            return web.json_response({"ok": True, "result": result[:1500]})
+        return web.json_response({"ok": False, "error": "The endpoint returned nothing usable (empty, non-200, or unreadable). Check the URL, header, and that it returns JSON with a 'context' field."})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)})
+
+
 def setup_internal_routes(app, manager):
     app["manager"] = manager
     app.router.add_post("/internal/telegram/send-code", send_code)
@@ -233,5 +254,6 @@ def setup_internal_routes(app, manager):
     app.router.add_post("/internal/telegram/connect-bot", connect_bot)
     app.router.add_post("/internal/ai-key", store_ai_key)
     app.router.add_post("/internal/integration", store_integration)
+    app.router.add_post("/internal/integration-test", test_integration)
     app.router.add_post("/internal/platform-ai-key", store_platform_ai_key)
     app.router.add_post("/internal/voice-provider", store_voice_provider)
