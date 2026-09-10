@@ -94,10 +94,10 @@ class BotManager:
                 continue
             seen.add(uid)
             try:
-                key_rows = await db.get_active_ai_keys(uid)
+                key_rows = await db.get_gemini_keys_for(uid)
                 if not key_rows:
                     continue
-                gem = GeminiClient([{"id": r["id"], "key": crypto.decrypt(r["key_enc"])} for r in key_rows])
+                gem = GeminiClient([{"id": r["id"], "key": crypto.decrypt(r["key_enc"]), "source": r["source"]} for r in key_rows])
                 customers = await db.get_customers(uid)
                 now = datetime.now(timezone.utc)
                 count = 0
