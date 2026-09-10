@@ -200,6 +200,32 @@ async def store_platform_ai_key(request):
         return web.json_response({"error": str(e)}, status=400)
 
 
+async def store_voice_provider(request):
+    if not _authorized(request):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    d = await request.json()
+    scope = "platform" if d.get("scope") == "platform" else "user"
+    user_id = d.get("user_id") if scope == "user" else None
+    if scope == "user" and not user_id:
+        return web.json_response({"error": "unauthorized"}, status=401)
+    endpoint = (d.get("endpoint") or "").strip()
+    if not endpoint:
+        return web.json_response({"error": "Endpoint is required."}, status=400)
+    hv = (d.get("header_value") or "").strip()
+    hv_enc = crypto.encrypt(hv) if hv else None
+    try:
+        await db.add_voice_provider(
+            scope, user_id, (d.get("name") or "").strip() or None, endpoint,
+            (d.get("method") or "POST"), (d.get("header_name") or "").strip() or None, hv_enc,
+            (d.get("body_template") or "").strip() or None, (d.get("voice") or "").strip() or None,
+            (d.get("response_type") or "audio"), (d.get("json_path") or "").strip() or None,
+            bool(d.get("enabled", True)),
+        )
+        return web.json_response({"ok": True})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+
 def setup_internal_routes(app, manager):
     app["manager"] = manager
     app.router.add_post("/internal/telegram/send-code", send_code)
@@ -208,3 +234,4 @@ def setup_internal_routes(app, manager):
     app.router.add_post("/internal/ai-key", store_ai_key)
     app.router.add_post("/internal/integration", store_integration)
     app.router.add_post("/internal/platform-ai-key", store_platform_ai_key)
+    app.router.add_post("/internal/voice-provider", store_voice_provider)
