@@ -41,8 +41,8 @@ class PTBBot:
             return self._cfg
         persona = await db.get_persona(self.user_id)
         products = await db.get_products(self.user_id)
-        key_rows = await db.get_active_ai_keys(self.user_id)
-        keys = [{"id": r["id"], "key": crypto.decrypt(r["key_enc"])} for r in key_rows]
+        key_rows = await db.get_gemini_keys_for(self.user_id)
+        keys = [{"id": r["id"], "key": crypto.decrypt(r["key_enc"]), "source": r["source"]} for r in key_rows]
         access = await db.get_access(self.user_id)
         self._cfg = {"persona": persona, "products": products, "gemini": GeminiClient(keys), "access": access}
         self._cfg_at = time.time()
