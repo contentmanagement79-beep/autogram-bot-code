@@ -43,9 +43,9 @@ class GeminiClient:
                     log.warning(f"Gemini model {model} error: {str(e)[:120]}")
                     continue  # try next model with same key
             if invalid_key:
-                log.warning("Gemini key invalid — marking it in the dashboard.")
+                log.warning("Gemini key invalid — marking it.")
                 try:
-                    await db.mark_ai_key(k["id"], "invalid")
+                    await db.mark_key_invalid(k["id"], k.get("source", "user"))
                 except Exception:
                     pass
                 self.keys = [x for x in self.keys if x["id"] != k["id"]]
