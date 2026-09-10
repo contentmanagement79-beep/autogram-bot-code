@@ -185,6 +185,21 @@ async def connect_bot(request):
     return web.json_response({"ok": True, "username": username})
 
 
+async def store_platform_ai_key(request):
+    if not _authorized(request):
+        return web.json_response({"error": "unauthorized"}, status=401)
+    data = await request.json()
+    key = (data.get("key") or "").strip()
+    if not key:
+        return web.json_response({"error": "Missing key."}, status=400)
+    try:
+        hint = key[-4:] if len(key) >= 4 else key
+        await db.add_platform_ai_key(crypto.encrypt(key), hint=hint)
+        return web.json_response({"ok": True})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+
 def setup_internal_routes(app, manager):
     app["manager"] = manager
     app.router.add_post("/internal/telegram/send-code", send_code)
@@ -192,3 +207,4 @@ def setup_internal_routes(app, manager):
     app.router.add_post("/internal/telegram/connect-bot", connect_bot)
     app.router.add_post("/internal/ai-key", store_ai_key)
     app.router.add_post("/internal/integration", store_integration)
+    app.router.add_post("/internal/platform-ai-key", store_platform_ai_key)
