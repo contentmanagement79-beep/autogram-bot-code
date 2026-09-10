@@ -359,3 +359,40 @@ async def add_platform_ai_key(key_enc: str, hint: str = ""):
     await p.execute(
         "insert into platform_ai_keys (key_enc, hint, status) values ($1, $2, 'active')", key_enc, hint
     )
+
+
+# ── Voice providers (own first, else managed if Pro + managed_voice_on) ────
+async def get_voice_provider_for(user_id):
+    from datetime import datetime, timezone
+    p = await pool()
+    own = await p.fetchrow(
+        "select * from voice_providers where scope='user' and user_id=$1 and enabled=true order by created_at limit 1",
+        user_id,
+    )
+    if own:
+        return dict(own)
+    try:
+        mon = await p.fetchval("select managed_voice_on from platform_settings where id = 1")
+    except Exception:
+        mon = False
+    if not mon:
+        return None
+    plan = await p.fetchrow("select plan, expires_at, suspended from plans where user_id=$1", user_id)
+    is_pro = bool(plan and not plan["suspended"] and plan["plan"] == "pro"
+                  and (plan["expires_at"] is None or plan["expires_at"] > datetime.now(timezone.utc)))
+    if not is_pro:
+        return None
+    plat = await p.fetchrow("select * from voice_providers where scope='platform' and enabled=true order by created_at limit 1")
+    return dict(plat) if plat else None
+
+
+async def add_voice_provider(scope, user_id, name, endpoint, method, header_name, header_value_enc,
+                             body_template, voice, response_type, json_path, enabled=True):
+    p = await pool()
+    await p.execute(
+        """insert into voice_providers
+           (scope,user_id,name,endpoint,method,header_name,header_value_enc,body_template,voice,response_type,json_path,enabled)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)""",
+        scope, user_id, name, endpoint, method or "POST", header_name, header_value_enc,
+        body_template, voice, response_type or "audio", json_path, enabled,
+    )
