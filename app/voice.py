@@ -25,7 +25,9 @@ def wants_voice(text: str) -> bool:
     t = text.lower()
     if any(kw in t for kw in _VOICE_KW):
         return True
-    if "voice" in t and any(a in t for a in ["dao", "de", "pathao", "send", "chai", "lagbe", "note", "bolo"]):
+    if ("voice" in t or "audio" in t) and any(a in t for a in ["dao", "de", "pathao", "send", "chai", "lagbe", "note", "bolo", "chao", "din", "diben"]):
+        return True
+    if any(w in text for w in ["ভয়েস", "ভয়েসে", "অডিও", "কণ্ঠ", "কন্ঠ", "শোনাও", "বলে দাও", "বলে দেন", "মুখে বল"]):
         return True
     return False
 
